@@ -1,0 +1,95 @@
+name: Build Unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-ios-ipa:
+    name: Build Unsigned IPA (LiveContainer)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build web assets
+        working-directory: web
+        run: npm run build
+
+      - name: Sync Capacitor iOS project
+        working-directory: web
+        run: npx cap sync ios
+
+      - name: Install CocoaPods (if Podfile exists)
+        working-directory: web/ios/App
+        run: |
+          if [ -f "Podfile" ]; then
+            pod install --repo-update
+          else
+            echo "No Podfile found (using Swift Package Manager CapApp-SPM), skipping pod install."
+          fi
+
+      - name: Build Release App (Unsigned)
+        working-directory: web/ios/App
+        run: |
+          if [ -d "App.xcworkspace" ]; then
+            xcodebuild \
+              -workspace App.xcworkspace \
+              -scheme App \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              clean build
+          else
+            xcodebuild \
+              -project App.xcodeproj \
+              -scheme App \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              clean build
+          fi
+
+      - name: Package Unsigned IPA for LiveContainer
+        working-directory: web/ios/App
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: .app bundle not found in Release-iphoneos"
+            exit 1
+          fi
+          mkdir -p ipa_out/Payload
+          cp -R "$APP_PATH" ipa_out/Payload/
+          cd ipa_out
+          zip -qry ../App-unsigned.ipa Payload
+          ls -lh ../App-unsigned.ipa
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: web/ios/App/App-unsigned.ipa
+          if-no-files-found: error
